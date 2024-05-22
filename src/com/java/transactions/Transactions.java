@@ -1,4 +1,4 @@
-package transactions;
+package com.java.transactions;
 
 import java.io.IOException;
 import java.net.HttpURLConnection;
@@ -6,13 +6,18 @@ import java.net.URL;
 import java.util.Scanner;
 
 public class Transactions {
+    public static void main(String[] args) {
+        System.out.println("Executing Java tests...");
 
-    public static void executeCreditLeg(double amount, String account) {
-        System.out.println("Crediting " + amount + " to account " + account);
-    }
+        try {
+            String httpResponse = httpRequest("https://jsonplaceholder.typicode.com/posts", "GET", "");
+            System.out.println("HTTP Response: " + httpResponse);
 
-    public static void executeDebitLeg(double amount, String account) {
-        System.out.println("Debiting " + amount + " from account " + account);
+            executeCreditLeg(100);
+            executeDebitLeg(50);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
     }
 
     public static String httpRequest(String urlString, String method, String payload) throws IOException {
@@ -21,7 +26,7 @@ public class Transactions {
         connection.setRequestMethod(method);
         connection.setRequestProperty("Content-Type", "application/json");
 
-        if (method.equals("POST") || method.equals("PUT")) {
+        if ("POST".equals(method) || "PUT".equals(method)) {
             connection.setDoOutput(true);
             connection.getOutputStream().write(payload.getBytes("UTF-8"));
         }
@@ -36,16 +41,11 @@ public class Transactions {
         return response.toString();
     }
 
-    public static void main(String[] args) {
-        // Test the functions
-        executeCreditLeg(100, "account1");
-        executeDebitLeg(50, "account2");
+    public static void executeCreditLeg(int amount) {
+        System.out.println("Credit leg executed with amount: " + amount);
+    }
 
-        try {
-            String response = httpRequest("https://jsonplaceholder.typicode.com/posts", "GET", "");
-            System.out.println("HTTP Response: " + response);
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
+    public static void executeDebitLeg(int amount) {
+        System.out.println("Debit leg executed with amount: " + amount);
     }
 }
