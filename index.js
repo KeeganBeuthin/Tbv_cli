@@ -24,26 +24,23 @@ const executeCommand = (command) => {
 const executeJavaTests = (file) => {
     console.log(`Executing Java tests for file: ${file}`);
   
-    // Assuming the out directory is at 'src/com/out'
-    const outDir = path.resolve(process.cwd(), 'src/com/out');
+    // Assuming the Maven project is in the current working directory
+    try {
+      // Running Maven compile phase
+      console.log("Compiling Java sources with Maven...");
+      execSync('mvn compile', { stdio: 'inherit' });
   
-    // Create output directory if it doesn't exist
-    mkdirSync(outDir, { recursive: true });
-  
-    // Compilation command
-    const javacCommand = `javac -d ${outDir} ${file}`;
-    console.log(`Running command: ${javacCommand}`);
-    executeCommand(javacCommand);
-  
-    // Extract the package and class name automatically
-    const packageName = 'com.java.transactions'; // Since package structure is known
-    const className = path.basename(file, '.java'); // Extract class name from file name
-  
-    // Execution command
-    const javaCommand = `java -cp ${outDir} ${packageName}.${className}`;
-    console.log(`Running command: ${javaCommand}`);
-    executeCommand(javaCommand);
+      // Building the package name and class from the file path
+      const className = file.replace('src/main/java/', '').replace('.java', '').replace(/\//g, '.');
+      console.log(`Running Java class: ${className}`);
+      
+      // Maven exec plugin to run the Java class
+      execSync(`mvn exec:java -Dexec.mainClass="${className}"`, { stdio: 'inherit' });
+    } catch (err) {
+      console.error(`Error executing Java tests: ${err.message}`);
+    }
   };
+  
 
 const executePythonTests = (file) => {
   console.log(`Executing Python tests for file: ${file}`);
