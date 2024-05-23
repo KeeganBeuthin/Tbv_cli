@@ -3,7 +3,12 @@
 const { Command } = require('commander');
 const { execSync } = require('child_process');
 const { mkdirSync } = require('fs');
+const { readFileSync } = require('fs');
 const path = require('path');
+const { WASI } = require('wasi');
+const { WebAssembly } = require('vm');
+
+
 
 const program = new Command();
 
@@ -20,6 +25,29 @@ const executeCommand = (command) => {
     console.error(`Error executing command: ${command}\n`, err.message);
   }
 };
+
+const executeWasm = (file) => {
+  console.log(`Executing WASM file: ${file}`);
+
+  const wasi = new WASI({
+      args: [file],
+      env: process.env,
+      preopens: {
+          '/sandbox': path.dirname(file)  
+      }
+  });
+
+  const wasmBuffer = readFileSync(file);
+  const wasmModule = new WebAssembly.Module(wasmBuffer);
+
+  
+  const instance = new WebAssembly.Instance(wasmModule, {
+      wasi_snapshot_preview1: wasi.wasiImport
+  });
+
+  wasi.start(instance);
+};
+
 
 const executeJavaTests = (file) => {
     console.log(`Executing Java tests for file: ${file}`);
@@ -69,7 +97,7 @@ const executeTypeScriptTests = (file) => {
   };
   
 
-program
+  program
   .command('test')
   .description('Test the SDK')
   .action(() => {
@@ -94,8 +122,11 @@ program
       case 'typescript':
         executeTypeScriptTests(file);
         break;
+      case 'wasm':
+        executeWasm(file);
+        break;
       default:
-        console.error('Unsupported language. Please choose java, python, or typescript.');
+        console.error(`Unsupported language. Please choose java, python, typescript, or wasm.`);
     }
   });
 
