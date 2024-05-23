@@ -37,7 +37,7 @@ var __generator = (this && this.__generator) || function (thisArg, body) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 // Importing necessary modules
-var node_fetch_1 = require("node-fetch");
+var axios_1 = require("axios");
 var Transactions = /** @class */ (function () {
     function Transactions() {
     }
@@ -72,26 +72,28 @@ var Transactions = /** @class */ (function () {
     };
     Transactions.httpRequest = function (url, method, payload) {
         return __awaiter(this, void 0, void 0, function () {
-            var headers, options, response, data;
+            var options, response, error_2;
             return __generator(this, function (_a) {
                 switch (_a.label) {
                     case 0:
-                        headers = { 'Content-Type': 'application/json' };
                         options = {
                             method: method,
-                            headers: headers,
-                            body: payload
+                            url: url,
+                            headers: { 'Content-Type': 'application/json' },
+                            data: (method === "POST" || method === "PUT") ? payload : null
                         };
-                        if (method === "GET" || method === "HEAD") {
-                            delete options.body; // GET or HEAD requests should not have a body
-                        }
-                        return [4 /*yield*/, (0, node_fetch_1.default)(url, options)];
+                        _a.label = 1;
                     case 1:
-                        response = _a.sent();
-                        return [4 /*yield*/, response.text()];
+                        _a.trys.push([1, 3, , 4]);
+                        return [4 /*yield*/, (0, axios_1.default)(options)];
                     case 2:
-                        data = _a.sent();
-                        return [2 /*return*/, data];
+                        response = _a.sent();
+                        return [2 /*return*/, JSON.stringify(response.data)]; // Converting response data to string for consistent output
+                    case 3:
+                        error_2 = _a.sent();
+                        console.error('HTTP request failed:', error_2);
+                        throw error_2; // Re-throwing the error for upstream handling
+                    case 4: return [2 /*return*/];
                 }
             });
         });

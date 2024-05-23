@@ -1,5 +1,5 @@
 // Importing necessary modules
-import fetch from 'node-fetch';
+import axios from 'axios';
 
 class Transactions {
     public static async main(): Promise<void> {
@@ -21,19 +21,22 @@ class Transactions {
     }
 
     private static async httpRequest(url: string, method: string, payload: string): Promise<string> {
-        const headers = { 'Content-Type': 'application/json' };
+        // Configure request based on method
         const options = {
             method: method,
-            headers: headers,
-            body: payload
+            url: url,
+            headers: { 'Content-Type': 'application/json' },
+            data: (method === "POST" || method === "PUT") ? payload : null
         };
-        if (method === "GET" || method === "HEAD") {
-            delete options.body;  // GET or HEAD requests should not have a body
-        }
 
-        const response = await fetch(url, options);
-        const data = await response.text();
-        return data;
+        // Axios automatically handles request method and data
+        try {
+            const response = await axios(options);
+            return JSON.stringify(response.data);  // Converting response data to string for consistent output
+        } catch (error) {
+            console.error('HTTP request failed:', error);
+            throw error;  // Re-throwing the error for upstream handling
+        }
     }
 
     private static executeCreditLeg(amount: number): void {
