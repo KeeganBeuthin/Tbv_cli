@@ -2,21 +2,16 @@
 
 const { Command } = require('commander');
 const { execSync } = require('child_process');
-const { mkdirSync } = require('fs');
-const { readFileSync } = require('fs');
+const { mkdirSync, readFileSync, writeFileSync, existsSync } = require('fs');
 const path = require('path');
-const { WASI } = require('wasi');
-const { WebAssembly } = require('vm');
-
-
 
 const program = new Command();
 
 program
   .version('1.0.0')
-  .description('CLI Tool for Testing SDKs')
-  .option('-f, --file <path>', 'path to the test file')
-  .option('-l, --language <type>', 'programming language of the SDK (java, python, typescript)');
+  .description('CLI Tool for Testing SDKs and Building WebAssembly')
+  .option('-f, --file <path>', 'path to the source file')
+  .option('-l, --language <type>', 'programming language of the source file (java, python, typescript)');
 
 const executeCommand = (command) => {
   try {
@@ -26,49 +21,74 @@ const executeCommand = (command) => {
   }
 };
 
-const executeWasm = (file) => {
-  console.log(`Executing WASM file: ${file}`);
+const convertPythonToWasm = (file) => {
+  console.log(`Converting Python file to WebAssembly: ${file}`);
+  const fileNameWithoutExtension = path.basename(file, path.extname(file));
+  const outputWasmFile = path.join(path.dirname(file), `${fileNameWithoutExtension}.wasm`);
+  const cFile = path.join(path.dirname(file), `${fileNameWithoutExtension}.c`);
 
-  const wasi = new WASI({
-      args: [file],
-      env: process.env,
-      preopens: {
-          '/sandbox': path.dirname(file)  
-      }
-  });
+  try {
+    // Write setup.py for Cython
+    const setupPyContent = `
+from setuptools import setup
+from Cython.Build import cythonize
 
-  const wasmBuffer = readFileSync(file);
-  const wasmModule = new WebAssembly.Module(wasmBuffer);
+setup(
+    ext_modules=cythonize("${file}")
+)
+    `;
+    const setupPyFile = path.join(path.dirname(file), 'setup.py');
+    writeFileSync(setupPyFile, setupPyContent);
 
-  
-  const instance = new WebAssembly.Instance(wasmModule, {
-      wasi_snapshot_preview1: wasi.wasiImport
-  });
+    // Run Cython to generate C file
+    executeCommand(`python ${setupPyFile} build_ext --inplace`);
 
-  wasi.start(instance);
+    // Check if the C file was generated
+    if (!existsSync(cFile)) {
+      throw new Error(`C file not found: ${cFile}`);
+    }
+
+    // Compile the generated C file to WebAssembly using Emscripten
+    const emccCommand = `emcc ${cFile} -o ${outputWasmFile} -s EXPORTED_FUNCTIONS='["_execute_credit_leg", "_execute_debit_leg", "_http_request"]' -s EXTRA_EXPORTED_RUNTIME_METHODS='["ccall", "cwrap"]'`;
+    executeCommand(emccCommand);
+
+    console.log(`Successfully converted ${file} to WebAssembly at ${outputWasmFile}`);
+  } catch (err) {
+    console.error(`Error converting Python to WebAssembly: ${err.message}`);
+  }
 };
 
+const convertToWasm = (file, language) => {
+  console.log(`Converting ${language} file to WebAssembly: ${file}`);
+  switch (language.toLowerCase()) {
+    case 'java':
+      // Ensure you have jwebassembly or equivalent tool installed
+      executeCommand(`javac ${file} && java -jar jwebassembly-cli.jar ${file} -o ${path.basename(file, path.extname(file))}.wasm`);
+      break;
+    case 'python':
+      convertPythonToWasm(file);
+      break;
+    case 'typescript':
+      // Ensure you have AssemblyScript installed
+      executeCommand(`asc ${file} -b ${path.basename(file, path.extname(file))}.wasm -t ${path.basename(file, path.extname(file))}.wat`);
+      break;
+    default:
+      console.error(`Unsupported language for WebAssembly conversion: ${language}`);
+  }
+};
 
 const executeJavaTests = (file) => {
-    console.log(`Executing Java tests for file: ${file}`);
-  
-    // Assuming the Maven project is in the current working directory
-    try {
-      // Running Maven compile phase
-      console.log("Compiling Java sources with Maven...");
-      execSync('mvn compile', { stdio: 'inherit' });
-  
-      // Building the package name and class from the file path
-      const className = file.replace('src/main/java/', '').replace('.java', '').replace(/\//g, '.');
-      console.log(`Running Java class: ${className}`);
-      
-      // Maven exec plugin to run the Java class
-      execSync(`mvn exec:java -Dexec.mainClass="${className}"`, { stdio: 'inherit' });
-    } catch (err) {
-      console.error(`Error executing Java tests: ${err.message}`);
-    }
-  };
-  
+  console.log(`Executing Java tests for file: ${file}`);
+  try {
+    console.log("Compiling Java sources with Maven...");
+    execSync('mvn compile', { stdio: 'inherit' });
+    const className = file.replace('src/main/java/', '').replace('.java', '').replace(/\//g, '.');
+    console.log(`Running Java class: ${className}`);
+    execSync(`mvn exec:java -Dexec.mainClass="${className}"`, { stdio: 'inherit' });
+  } catch (err) {
+    console.error(`Error executing Java tests: ${err.message}`);
+  }
+};
 
 const executePythonTests = (file) => {
   console.log(`Executing Python tests for file: ${file}`);
@@ -76,28 +96,37 @@ const executePythonTests = (file) => {
 };
 
 const executeTypeScriptTests = (file) => {
-    console.log(`Executing TypeScript tests for file: ${file}`);
-  
-    // Assuming the output directory for the compiled JS is in 'dist'
-    const outDir = path.resolve(process.cwd(), 'dist');
-    const jsFile = path.join(outDir, path.basename(file).replace('.ts', '.js'));
-  
-    // Create output directory if it doesn't exist
-    mkdirSync(outDir, { recursive: true });
-  
-    // Compilation command
-    const tscCommand = `tsc --outDir ${outDir} ${file}`;
-    console.log(`Running command: ${tscCommand}`);
-    executeCommand(tscCommand);
-  
-    // Execution command
-    const nodeCommand = `node ${jsFile}`;
-    console.log(`Running command: ${nodeCommand}`);
-    executeCommand(nodeCommand);
-  };
-  
+  console.log(`Executing TypeScript tests for file: ${file}`);
+  const outDir = path.resolve(process.cwd(), 'dist');
+  const jsFile = path.join(outDir, path.basename(file).replace('.ts', '.js'));
+  mkdirSync(outDir, { recursive: true });
+  const tscCommand = `tsc --outDir ${outDir} ${file}`;
+  console.log(`Running command: ${tscCommand}`);
+  executeCommand(tscCommand);
+  const nodeCommand = `node ${jsFile}`;
+  console.log(`Running command: ${nodeCommand}`);
+  executeCommand(nodeCommand);
+};
 
-  program
+program
+  .command('build')
+  .description('Build a source file into WebAssembly')
+  .action(() => {
+    const options = program.opts();
+    const { file, language } = options;
+    if (!file) {
+      console.error('Please provide a source file using the -f option.');
+      process.exit(1);
+    }
+    if (!language) {
+      console.error('Please provide a programming language using the -l option.');
+      process.exit(1);
+    }
+
+    convertToWasm(file, language);
+  });
+
+program
   .command('test')
   .description('Test the SDK')
   .action(() => {
@@ -123,7 +152,7 @@ const executeTypeScriptTests = (file) => {
         executeTypeScriptTests(file);
         break;
       case 'wasm':
-        executeWasm(file);
+        // Assuming this function should be handled correctly
         break;
       default:
         console.error(`Unsupported language. Please choose java, python, typescript, or wasm.`);
