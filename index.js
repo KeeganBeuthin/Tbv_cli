@@ -2,7 +2,7 @@
 
 const { Command } = require('commander');
 const { execSync } = require('child_process');
-const { mkdirSync, readFileSync, writeFileSync, existsSync } = require('fs');
+const { existsSync, mkdirSync, readdirSync } = require('fs');
 const path = require('path');
 
 const program = new Command();
@@ -13,44 +13,43 @@ program
   .option('-f, --file <path>', 'path to the source file')
   .option('-l, --language <type>', 'programming language of the source file (java, python, typescript)');
 
-const executeCommand = (command) => {
+const executeCommand = (command, args = []) => {
   try {
-    execSync(command, { stdio: 'inherit' });
+    execSync([command, ...args].join(' '), { stdio: 'inherit' });
   } catch (err) {
-    console.error(`Error executing command: ${command}\n`, err.message);
+    console.error(`Error executing command: ${command} ${args.join(' ')}\n`, err.message);
   }
 };
 
 const convertPythonToWasm = (file) => {
   console.log(`Converting Python file to WebAssembly: ${file}`);
   const fileNameWithoutExtension = path.basename(file, path.extname(file));
-  const outputWasmFile = path.join(path.dirname(file), `${fileNameWithoutExtension}.wasm`);
-  const cFile = path.join(path.dirname(file), `${fileNameWithoutExtension}.c`);
+  const buildDir = path.join(path.dirname(file), 'build');
+  const intermediateBuildDir = path.join(buildDir, `${fileNameWithoutExtension}.build`);
+  const outputWasmFile = path.join(buildDir, `${fileNameWithoutExtension}.wasm`);
 
   try {
-    // Write setup.py for Cython
-    const setupPyContent = `
-from setuptools import setup
-from Cython.Build import cythonize
-
-setup(
-    ext_modules=cythonize("${file}")
-)
-    `;
-    const setupPyFile = path.join(path.dirname(file), 'setup.py');
-    writeFileSync(setupPyFile, setupPyContent);
-
-    // Run Cython to generate C file
-    executeCommand(`python ${setupPyFile} build_ext --inplace`);
-
-    // Check if the C file was generated
-    if (!existsSync(cFile)) {
-      throw new Error(`C file not found: ${cFile}`);
+    // Ensure the build directory exists
+    if (!existsSync(buildDir)) {
+      mkdirSync(buildDir, { recursive: true });
     }
 
-    // Compile the generated C file to WebAssembly using Emscripten
-    const emccCommand = `emcc ${cFile} -o ${outputWasmFile} -s EXPORTED_FUNCTIONS='["_execute_credit_leg", "_execute_debit_leg", "_http_request"]' -s EXTRA_EXPORTED_RUNTIME_METHODS='["ccall", "cwrap"]'`;
-    executeCommand(emccCommand);
+    // Compile Python to C using Nuitka
+    executeCommand('python', ['-m', 'nuitka', '--module', '--output-dir=' + buildDir, file]);
+
+    const cFiles = readdirSync(intermediateBuildDir).filter(file => file.endsWith('.c'));
+    if (cFiles.length === 0) {
+      throw new Error(`C source files not found in: ${intermediateBuildDir}`);
+    }
+
+    // Compile the generated C files to WebAssembly using Emscripten
+    const emccArgs = [
+      ...cFiles.map(file => path.join(intermediateBuildDir, file)),
+      '-o', outputWasmFile,
+      '-s', 'EXPORTED_FUNCTIONS=["_execute_credit_leg","_execute_debit_leg","_http_request"]',
+      '-s', 'EXPORTED_RUNTIME_METHODS=["ccall","cwrap"]'
+    ];
+    executeCommand('emcc', emccArgs);
 
     console.log(`Successfully converted ${file} to WebAssembly at ${outputWasmFile}`);
   } catch (err) {
@@ -63,14 +62,15 @@ const convertToWasm = (file, language) => {
   switch (language.toLowerCase()) {
     case 'java':
       // Ensure you have jwebassembly or equivalent tool installed
-      executeCommand(`javac ${file} && java -jar jwebassembly-cli.jar ${file} -o ${path.basename(file, path.extname(file))}.wasm`);
+      executeCommand('javac', [file]);
+      executeCommand('java', ['-jar', 'jwebassembly-cli.jar', file, '-o', `${path.basename(file, path.extname(file))}.wasm`]);
       break;
     case 'python':
       convertPythonToWasm(file);
       break;
     case 'typescript':
       // Ensure you have AssemblyScript installed
-      executeCommand(`asc ${file} -b ${path.basename(file, path.extname(file))}.wasm -t ${path.basename(file, path.extname(file))}.wat`);
+      executeCommand('asc', [file, '-b', `${path.basename(file, path.extname(file))}.wasm`, '-t', `${path.basename(file, path.extname(file))}.wat`]);
       break;
     default:
       console.error(`Unsupported language for WebAssembly conversion: ${language}`);
@@ -92,7 +92,7 @@ const executeJavaTests = (file) => {
 
 const executePythonTests = (file) => {
   console.log(`Executing Python tests for file: ${file}`);
-  executeCommand(`python ${file}`);
+  executeCommand('python', [file]);
 };
 
 const executeTypeScriptTests = (file) => {
@@ -100,12 +100,12 @@ const executeTypeScriptTests = (file) => {
   const outDir = path.resolve(process.cwd(), 'dist');
   const jsFile = path.join(outDir, path.basename(file).replace('.ts', '.js'));
   mkdirSync(outDir, { recursive: true });
-  const tscCommand = `tsc --outDir ${outDir} ${file}`;
+  const tscCommand = 'tsc --outDir ' + outDir + ' ' + file;
   console.log(`Running command: ${tscCommand}`);
-  executeCommand(tscCommand);
-  const nodeCommand = `node ${jsFile}`;
+  executeCommand('tsc', ['--outDir', outDir, file]);
+  const nodeCommand = 'node ' + jsFile;
   console.log(`Running command: ${nodeCommand}`);
-  executeCommand(nodeCommand);
+  executeCommand('node', [jsFile]);
 };
 
 program
