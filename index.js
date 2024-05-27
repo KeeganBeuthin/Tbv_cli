@@ -21,6 +21,15 @@ const executeCommand = (command, args = []) => {
   }
 };
 
+const executeCommandSync = (command, args = []) => {
+  try {
+    return execSync([command, ...args].join(' '), { stdio: 'pipe' }).toString();
+  } catch (err) {
+    console.error(`Error executing command: ${command} ${args.join(' ')}\n`, err.message);
+    return null;
+  }
+};
+
 const getNuitkaIncludePath = () => {
   const includePath = execSync('python -c "import nuitka; import os; print(os.path.dirname(nuitka.__file__))"').toString().trim();
   return path.join(includePath, 'build', 'include');
@@ -51,6 +60,11 @@ const findCFiles = (dir) => {
   return cFiles;
 };
 
+const getPythonPrefixPath = () => {
+  const result = executeCommandSync('python', ['-c', 'import sys; print(sys.prefix)']);
+  return result.trim();
+};
+
 const convertPythonToWasm = (file) => {
   console.log(`Converting Python file to WebAssembly: ${file}`);
   const fileNameWithoutExtension = path.basename(file, path.extname(file));
@@ -59,15 +73,12 @@ const convertPythonToWasm = (file) => {
   const outputWasmFile = path.join(buildDir, `${fileNameWithoutExtension}.wasm`);
 
   try {
-    // Ensure the build directory exists
     if (!existsSync(buildDir)) {
       mkdirSync(buildDir, { recursive: true });
     }
 
-    // Compile Python to C using Nuitka with MinGW64
     executeCommand('python', ['-m', 'nuitka', '--module', '--mingw64', '--output-dir=' + buildDir, '--show-scons', file]);
 
-    // Debugging output to check where the C files are placed
     console.log(`Looking for C files in directory: ${intermediateBuildDir}`);
     const cFiles = findCFiles(intermediateBuildDir);
     console.log(`Found C files: ${cFiles.join(', ')}`);
@@ -75,19 +86,18 @@ const convertPythonToWasm = (file) => {
       throw new Error(`C source files not found in: ${intermediateBuildDir}`);
     }
 
-    // Preprocess the generated C files to handle platform-specific includes
     cFiles.forEach(file => preprocessCFile(file));
 
     const nuitkaIncludePath = getNuitkaIncludePath();
     const pythonIncludePath = getPythonIncludePath();
+    const pythonLibPath = path.join(getPythonPrefixPath(), 'libs');
 
-    // Compile the generated C files to WebAssembly using MinGW64
     cFiles.forEach(cFile => {
-      executeCommand('gcc', ['-c', `"${cFile}"`, '-o', `"${cFile.replace('.c', '.o')}"`, '-I', `"${nuitkaIncludePath}"`, '-I', `"${pythonIncludePath}"`]);
+      executeCommand('gcc', ['-c', `"${cFile}"`, '-o', `"${cFile.replace('.c', '.o')}"`, '-I', `"${nuitkaIncludePath}"`, '-I', `"${pythonIncludePath}"`, '-I', `"${intermediateBuildDir}"`]);
     });
 
     const objectFiles = cFiles.map(cFile => cFile.replace('.c', '.o'));
-    executeCommand('gcc', [...objectFiles, '-o', `"${outputWasmFile}"`]);
+    executeCommand('gcc', [...objectFiles, '-o', `"${outputWasmFile}"`, '-L', `"${pythonLibPath}"`, '-L', `"${buildDir}"`, '-L', `"${intermediateBuildDir}"`, '-lpython310']);
 
     console.log(`Successfully converted ${file} to WebAssembly at ${outputWasmFile}`);
   } catch (err) {
@@ -99,7 +109,6 @@ const convertToWasm = (file, language) => {
   console.log(`Converting ${language} file to WebAssembly: ${file}`);
   switch (language.toLowerCase()) {
     case 'java':
-      // Ensure you have jwebassembly or equivalent tool installed
       executeCommand('javac', [file]);
       executeCommand('java', ['-jar', 'jwebassembly-cli.jar', file, '-o', `${path.basename(file, path.extname(file))}.wasm`]);
       break;
@@ -107,7 +116,6 @@ const convertToWasm = (file, language) => {
       convertPythonToWasm(file);
       break;
     case 'typescript':
-      // Ensure you have AssemblyScript installed
       executeCommand('asc', [file, '-b', `${path.basename(file, path.extname(file))}.wasm`, '-t', `${path.basename(file, path.extname(file))}.wat`]);
       break;
     default:
