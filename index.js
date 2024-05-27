@@ -2,7 +2,7 @@
 
 const { Command } = require('commander');
 const { execSync } = require('child_process');
-const { existsSync, mkdirSync, readdirSync } = require('fs');
+const { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, statSync } = require('fs');
 const path = require('path');
 
 const program = new Command();
@@ -21,6 +21,36 @@ const executeCommand = (command, args = []) => {
   }
 };
 
+const getNuitkaIncludePath = () => {
+  const includePath = execSync('python -c "import nuitka; import os; print(os.path.dirname(nuitka.__file__))"').toString().trim();
+  return path.join(includePath, 'build', 'include');
+};
+
+const getPythonIncludePath = () => {
+  return execSync('python -c "from sysconfig import get_paths as gp; print(gp()[\'include\'])"').toString().trim();
+};
+
+const preprocessCFile = (filePath) => {
+  let content = readFileSync(filePath, 'utf8');
+  content = content.replace(/^#include <io\.h>$/m, '#ifdef __EMSCRIPTEN__\n// #include <io.h>\n#endif');
+  writeFileSync(filePath, content, 'utf8');
+};
+
+const findCFiles = (dir) => {
+  let cFiles = [];
+  const files = readdirSync(dir);
+  files.forEach(file => {
+    const fullPath = path.join(dir, file);
+    const stat = statSync(fullPath);
+    if (stat.isDirectory()) {
+      cFiles = cFiles.concat(findCFiles(fullPath));
+    } else if (file.endsWith('.c')) {
+      cFiles.push(fullPath);
+    }
+  });
+  return cFiles;
+};
+
 const convertPythonToWasm = (file) => {
   console.log(`Converting Python file to WebAssembly: ${file}`);
   const fileNameWithoutExtension = path.basename(file, path.extname(file));
@@ -34,22 +64,30 @@ const convertPythonToWasm = (file) => {
       mkdirSync(buildDir, { recursive: true });
     }
 
-    // Compile Python to C using Nuitka
-    executeCommand('python', ['-m', 'nuitka', '--module', '--output-dir=' + buildDir, file]);
+    // Compile Python to C using Nuitka with MinGW64
+    executeCommand('python', ['-m', 'nuitka', '--module', '--mingw64', '--output-dir=' + buildDir, '--show-scons', file]);
 
-    const cFiles = readdirSync(intermediateBuildDir).filter(file => file.endsWith('.c'));
+    // Debugging output to check where the C files are placed
+    console.log(`Looking for C files in directory: ${intermediateBuildDir}`);
+    const cFiles = findCFiles(intermediateBuildDir);
+    console.log(`Found C files: ${cFiles.join(', ')}`);
     if (cFiles.length === 0) {
       throw new Error(`C source files not found in: ${intermediateBuildDir}`);
     }
 
-    // Compile the generated C files to WebAssembly using Emscripten
-    const emccArgs = [
-      ...cFiles.map(file => path.join(intermediateBuildDir, file)),
-      '-o', outputWasmFile,
-      '-s', 'EXPORTED_FUNCTIONS=["_execute_credit_leg","_execute_debit_leg","_http_request"]',
-      '-s', 'EXPORTED_RUNTIME_METHODS=["ccall","cwrap"]'
-    ];
-    executeCommand('emcc', emccArgs);
+    // Preprocess the generated C files to handle platform-specific includes
+    cFiles.forEach(file => preprocessCFile(file));
+
+    const nuitkaIncludePath = getNuitkaIncludePath();
+    const pythonIncludePath = getPythonIncludePath();
+
+    // Compile the generated C files to WebAssembly using MinGW64
+    cFiles.forEach(cFile => {
+      executeCommand('gcc', ['-c', `"${cFile}"`, '-o', `"${cFile.replace('.c', '.o')}"`, '-I', `"${nuitkaIncludePath}"`, '-I', `"${pythonIncludePath}"`]);
+    });
+
+    const objectFiles = cFiles.map(cFile => cFile.replace('.c', '.o'));
+    executeCommand('gcc', [...objectFiles, '-o', `"${outputWasmFile}"`]);
 
     console.log(`Successfully converted ${file} to WebAssembly at ${outputWasmFile}`);
   } catch (err) {
