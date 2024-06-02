@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 const { Command } = require('commander');
-const { execSync } = require('child_process');
+const { execSync, spawnSync } = require('child_process');
 const { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, statSync } = require('fs');
 const path = require('path');
 
@@ -13,21 +13,38 @@ program
   .option('-f, --file <path>', 'path to the source file')
   .option('-l, --language <type>', 'programming language of the source file (java, python, typescript)');
 
-const executeCommand = (command, args = []) => {
+const executeCommand = (command, args = [], options = {}) => {
   try {
-    execSync([command, ...args].join(' '), { stdio: 'inherit' });
+    const result = spawnSync(command, args, { stdio: 'inherit', shell: true, ...options });
+    if (result.error) {
+      throw result.error;
+    }
+    if (result.status !== 0) {
+      throw new Error(`Command failed with exit code ${result.status}: ${command} ${args.join(' ')}`);
+    }
   } catch (err) {
     console.error(`Error executing command: ${command} ${args.join(' ')}\n`, err.message);
   }
 };
 
-const executeCommandSync = (command, args = []) => {
-  try {
-    return execSync([command, ...args].join(' '), { stdio: 'pipe' }).toString();
-  } catch (err) {
-    console.error(`Error executing command: ${command} ${args.join(' ')}\n`, err.message);
-    return null;
-  }
+const preprocessCFile = (filePath) => {
+  let content = readFileSync(filePath, 'utf8');
+  content = content.replace(/^#include <io\.h>$/m, '#ifndef __EMSCRIPTEN__\n#include <io.h>\n#endif');
+  writeFileSync(filePath, content, 'utf8');
+};
+
+const findCFiles = (dir) => {
+  let cFiles = [];
+  const files = readdirSync(dir);
+  files.forEach(file => {
+    const fullPath = path.join(dir, file);
+    if (file.endsWith('.c')) {
+      cFiles.push(fullPath);
+    } else if (statSync(fullPath).isDirectory()) {
+      cFiles = cFiles.concat(findCFiles(fullPath));
+    }
+  });
+  return cFiles;
 };
 
 const getNuitkaIncludePath = () => {
@@ -39,32 +56,6 @@ const getPythonIncludePath = () => {
   return execSync('python -c "from sysconfig import get_paths as gp; print(gp()[\'include\'])"').toString().trim();
 };
 
-const preprocessCFile = (filePath) => {
-  let content = readFileSync(filePath, 'utf8');
-  content = content.replace(/^#include <io\.h>$/m, '#ifdef __EMSCRIPTEN__\n// #include <io.h>\n#endif');
-  writeFileSync(filePath, content, 'utf8');
-};
-
-const findCFiles = (dir) => {
-  let cFiles = [];
-  const files = readdirSync(dir);
-  files.forEach(file => {
-    const fullPath = path.join(dir, file);
-    const stat = statSync(fullPath);
-    if (stat.isDirectory()) {
-      cFiles = cFiles.concat(findCFiles(fullPath));
-    } else if (file.endsWith('.c')) {
-      cFiles.push(fullPath);
-    }
-  });
-  return cFiles;
-};
-
-const getPythonPrefixPath = () => {
-  const result = executeCommandSync('python', ['-c', 'import sys; print(sys.prefix)']);
-  return result.trim();
-};
-
 const convertPythonToWasm = (file) => {
   console.log(`Converting Python file to WebAssembly: ${file}`);
   const fileNameWithoutExtension = path.basename(file, path.extname(file));
@@ -73,12 +64,15 @@ const convertPythonToWasm = (file) => {
   const outputWasmFile = path.join(buildDir, `${fileNameWithoutExtension}.wasm`);
 
   try {
+    // Ensure the build directory exists
     if (!existsSync(buildDir)) {
       mkdirSync(buildDir, { recursive: true });
     }
 
-    executeCommand('python', ['-m', 'nuitka', '--module', '--mingw64', '--output-dir=' + buildDir, '--show-scons', file]);
+    // Compile Python to C using Nuitka with MinGW64 Clang
+    executeCommand('python', ['-m', 'nuitka', '--module', '--mingw64', '--clang', '--output-dir=' + buildDir, file]);
 
+    // Debugging output to check where the C files are placed
     console.log(`Looking for C files in directory: ${intermediateBuildDir}`);
     const cFiles = findCFiles(intermediateBuildDir);
     console.log(`Found C files: ${cFiles.join(', ')}`);
@@ -86,18 +80,38 @@ const convertPythonToWasm = (file) => {
       throw new Error(`C source files not found in: ${intermediateBuildDir}`);
     }
 
+    // Preprocess the generated C files to handle platform-specific includes
     cFiles.forEach(file => preprocessCFile(file));
 
     const nuitkaIncludePath = getNuitkaIncludePath();
     const pythonIncludePath = getPythonIncludePath();
-    const pythonLibPath = path.join(getPythonPrefixPath(), 'libs');
 
-    cFiles.forEach(cFile => {
-      executeCommand('gcc', ['-c', `"${cFile}"`, '-o', `"${cFile.replace('.c', '.o')}"`, '-I', `"${nuitkaIncludePath}"`, '-I', `"${pythonIncludePath}"`, '-I', `"${intermediateBuildDir}"`]);
-    });
+    // Set up environment variables for Emscripten
+    const emscriptenEnv = {
+      ...process.env,
+      PATH: `C:/Brunt-jam/clang+llvm-18.1.6-x86_64-pc-windows-msvc/clang+llvm-18.1.6-x86_64-pc-windows-msvc/bin;C:/Brunt-jam/emsdk/upstream/emscripten;C:/Brunt-jam/emsdk/node/18.20.3_64bit/bin;${process.env.PATH}`
+    };
 
-    const objectFiles = cFiles.map(cFile => cFile.replace('.c', '.o'));
-    executeCommand('gcc', [...objectFiles, '-o', `"${outputWasmFile}"`, '-L', `"${pythonLibPath}"`, '-L', `"${buildDir}"`, '-L', `"${intermediateBuildDir}"`, '-lpython310']);
+    // Add Windows Kit and Visual Studio include paths
+    const windowsKitIncludePath = 'C:/Program Files (x86)/Windows Kits/10/Include/10.0.22621.0/ucrt';
+    const visualStudioIncludePath = 'C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.40.33807/include';
+
+    // Compile the generated C files to WebAssembly using Emscripten
+    const emccArgs = [
+      ...cFiles,
+      '-o', outputWasmFile,
+      `-I"${nuitkaIncludePath}"`,
+      `-I"${pythonIncludePath}"`,
+      `-I"${windowsKitIncludePath}"`,
+      `-I"${visualStudioIncludePath}"`,
+      '-s', 'EXPORTED_FUNCTIONS=["_execute_credit_leg","_execute_debit_leg","_http_request"]',
+      '-s', 'EXPORTED_RUNTIME_METHODS=["ccall","cwrap"]',
+      '-fdeclspec', 
+      '-fms-extensions'
+    ];
+
+    console.log(`Running emcc command: emcc ${emccArgs.join(' ')}`);
+    executeCommand('emcc', emccArgs, { env: emscriptenEnv });
 
     console.log(`Successfully converted ${file} to WebAssembly at ${outputWasmFile}`);
   } catch (err) {
@@ -109,6 +123,7 @@ const convertToWasm = (file, language) => {
   console.log(`Converting ${language} file to WebAssembly: ${file}`);
   switch (language.toLowerCase()) {
     case 'java':
+      // Ensure you have jwebassembly or equivalent tool installed
       executeCommand('javac', [file]);
       executeCommand('java', ['-jar', 'jwebassembly-cli.jar', file, '-o', `${path.basename(file, path.extname(file))}.wasm`]);
       break;
@@ -116,6 +131,7 @@ const convertToWasm = (file, language) => {
       convertPythonToWasm(file);
       break;
     case 'typescript':
+      // Ensure you have AssemblyScript installed
       executeCommand('asc', [file, '-b', `${path.basename(file, path.extname(file))}.wasm`, '-t', `${path.basename(file, path.extname(file))}.wat`]);
       break;
     default:
@@ -205,4 +221,4 @@ program
     }
   });
 
-program.parse(process.argv);
+program.parse(process.argvs)
